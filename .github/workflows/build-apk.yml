@@ -17,6 +17,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -34,11 +36,17 @@ jobs:
             exit 1
           fi
           echo "Detected full Java version string: $JAVA_VER"
-          JAVA_MAJOR=$(echo "$JAVA_VER" | cut -d'.' -f1)
+          JAVA_MAJOR=$(echo "$JAVA_VER" | cut -d. -f1)
           if [ "$JAVA_MAJOR" = "1" ]; then
-            JAVA_MAJOR=$(echo "$JAVA_VER" | cut -d'.' -f2)
+            JAVA_MAJOR=$(echo "$JAVA_VER" | cut -d. -f2)
           fi
-          if ! [ "$JAVA_MAJOR" -ge 17 ] 2>/dev/null; then
+          case "$JAVA_MAJOR" in
+            ''|*[!0-9]*)
+              echo "ERROR: Detected Java major version is not numeric: '$JAVA_MAJOR'"
+              exit 1
+              ;;
+          esac
+          if [ "$JAVA_MAJOR" -lt 17 ]; then
             echo "ERROR: Active Java major version is '$JAVA_MAJOR', which is below required Java 17."
             exit 1
           fi
