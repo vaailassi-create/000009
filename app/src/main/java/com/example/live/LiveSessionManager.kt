@@ -42,9 +42,11 @@ class LiveSessionManager(
 
     private var webSocket: WebSocket? = null
     private val client = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
+        .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS)
-        .pingInterval(15, TimeUnit.SECONDS)
+        .writeTimeout(15, TimeUnit.SECONDS)
+        .pingInterval(10, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
         .build()
 
     private val scope = CoroutineScope(Dispatchers.IO + Job())
@@ -246,15 +248,21 @@ class LiveSessionManager(
         if (webSocket != null) return
         
         val prefs = context.getSharedPreferences("ZoyaPrefs", android.content.Context.MODE_PRIVATE)
-        val apiKey = prefs.getString("api_key", "") ?: ""
-        if (apiKey.isEmpty()) {
-            addMessage("Error: API Key is missing. Please set it in Settings.")
-            _zoyaState.value = ZoyaState.IDLE
-            return
+        var apiKey = prefs.getString("api_key", "") ?: ""
+        if (apiKey.isBlank() || apiKey == "YOUR_API_KEY" || apiKey == "MY_GEMINI_API_KEY") {
+            val buildKey = runCatching {
+                val field = BuildConfig::class.java.getField("GEMINI_API_KEY")
+                field.get(null) as? String
+            }.getOrNull() ?: ""
+            if (buildKey.isNotBlank() && buildKey != "MY_GEMINI_API_KEY" && buildKey != "YOUR_API_KEY") {
+                apiKey = buildKey
+                prefs.edit().putString("api_key", apiKey).apply()
+            }
         }
-        if (apiKey.isEmpty() || apiKey == "YOUR_API_KEY") {
+        if (apiKey.isEmpty() || apiKey == "YOUR_API_KEY" || apiKey == "MY_GEMINI_API_KEY") {
             Log.e("ZoyaDiagnostic", "No API Key found")
-            addMessage("Error: Gemini API Key is missing. Please add it to the Secrets tab.")
+            addMessage("Notice: API Key is required. Please set it via API Key Settings.")
+            _zoyaState.value = ZoyaState.IDLE
             return
         }
         
@@ -301,11 +309,29 @@ class LiveSessionManager(
 
     private fun sendInitialPrompt(ws: WebSocket) {
         val prefs = context.getSharedPreferences("ZoyaPrefs", android.content.Context.MODE_PRIVATE)
-        val selectedVoice = prefs.getString("selected_voice", "David - Gruff Cowboy") ?: "David - Gruff Cowboy"
-        val greetingPrompt = if (selectedVoice.contains("David", ignoreCase = true) || selectedVoice.contains("Cowboy", ignoreCase = true)) {
-            "Say in your gruff cowboy voice: Howdy partner. David here. What can I do for ya?"
+        val selectedVoice = prefs.getString("selected_voice", "Ren - Anime Boy") ?: "Ren - Anime Boy"
+        val selectedLanguage = prefs.getString("selected_language", "Hindi") ?: "Hindi"
+
+        val greetingPrompt = if (selectedLanguage.equals("Hindi", ignoreCase = true)) {
+            if (selectedVoice.contains("David", ignoreCase = true) || selectedVoice.contains("Cowboy", ignoreCase = true)) {
+                "Hindi me bolo: 'Ram Ram partner! David yahan hai. Batao kya madad karu?'"
+            } else if (selectedVoice.contains("Ren", ignoreCase = true) || selectedVoice.contains("Anime", ignoreCase = true)) {
+                "Hindi me energetic anime hero tone me bolo: 'Konnichiwa! Ren online hai. Batao senpai, aaj kya madad karu?'"
+            } else if (selectedVoice.contains("Hiro", ignoreCase = true)) {
+                "Hindi me cool calm anime voice me bolo: 'Namaste senpai. Hiro yahan hai. Main aapki kya seva kar sakta hoon?'"
+            } else {
+                "Hindi me bolo: 'Namaste! Main aapki kya madad kar sakta hoon?'"
+            }
         } else {
-            "Hi! Introduce yourself briefly."
+            if (selectedVoice.contains("David", ignoreCase = true) || selectedVoice.contains("Cowboy", ignoreCase = true)) {
+                "Say in your gruff cowboy voice: Howdy partner. David here. What can I do for ya?"
+            } else if (selectedVoice.contains("Ren", ignoreCase = true) || selectedVoice.contains("Anime", ignoreCase = true)) {
+                "Say in your cool energetic anime boy voice: 'Hey there! Ren here, your anime AI partner. Ready when you are, Senpai!'"
+            } else if (selectedVoice.contains("Hiro", ignoreCase = true)) {
+                "Say in your calm, cool anime voice: 'Greetings. Hiro online and synced. How can I assist you today?'"
+            } else {
+                "Hi! Introduce yourself briefly."
+            }
         }
         val msg = buildJsonObject {
             putJsonObject("clientContent") {
@@ -391,25 +417,54 @@ class LiveSessionManager(
     
     private fun sendSetupMessage(ws: WebSocket) {
         val prefs = context.getSharedPreferences("ZoyaPrefs", android.content.Context.MODE_PRIVATE)
-        val selectedVoice = prefs.getString("selected_voice", "David - Gruff Cowboy") ?: "David - Gruff Cowboy"
+        val selectedVoice = prefs.getString("selected_voice", "Ren - Anime Boy") ?: "Ren - Anime Boy"
+        val selectedLanguage = prefs.getString("selected_language", "Hindi") ?: "Hindi"
 
         val voiceName = when {
             selectedVoice.contains("David", ignoreCase = true) || selectedVoice.contains("Cowboy", ignoreCase = true) -> "Fenrir"
+            selectedVoice.contains("Ren", ignoreCase = true) || selectedVoice.contains("Anime", ignoreCase = true) -> "Puck"
+            selectedVoice.contains("Hiro", ignoreCase = true) -> "Fenrir"
             selectedVoice.contains("Aoede", ignoreCase = true) -> "Aoede"
             selectedVoice.contains("Fenrir", ignoreCase = true) -> "Fenrir"
             selectedVoice.contains("Puck", ignoreCase = true) -> "Puck"
             selectedVoice.contains("Charon", ignoreCase = true) -> "Charon"
             selectedVoice.contains("Kore", ignoreCase = true) -> "Kore"
-            else -> "Fenrir"
+            else -> "Puck"
+        }
+
+        val languageInstruction = if (selectedLanguage.equals("Hindi", ignoreCase = true)) {
+            "LANGUAGE INSTRUCTION (MANDATORY):\n- You MUST speak, converse, and reply entirely in HINDI (natural everyday Hindi / conversational Hinglish as spoken in India).\n- Regardless of whether the user speaks in Hindi, English, or mixed language, your verbal voice response MUST ALWAYS be in Hindi.\n- Never answer in full English. Speak naturally, politely, and fluently in Hindi.\n\n"
+        } else {
+            ""
         }
 
         val personaPrompt = if (selectedVoice.contains("David", ignoreCase = true) || selectedVoice.contains("Cowboy", ignoreCase = true)) {
-            "You are David, a gruff, weathered cowboy voice assistant on the user's Android phone. Speak with a deep, rugged, gravelly cowboy voice and terse Western cadence (using authentic cowboy remarks like 'Partner', 'Reckon', 'Hold your horses', 'Much obliged', 'Alright partner'). Keep responses short, direct, and authoritative.\n\n"
+            if (selectedLanguage.equals("Hindi", ignoreCase = true)) {
+                "You are David, a gruff, weathered cowboy voice assistant on the user's Android phone. Speak in HINDI with a deep, rugged cowboy cadence and attitude (use authentic cowboy remarks adapted into Hindi like 'Haan partner', 'Theek hai partner, abhi karta hoon', 'Arre partner, ruko thoda', 'Bahut shukriya partner'). Keep responses short, direct, and authoritative in Hindi.\n\n"
+            } else {
+                "You are David, a gruff, weathered cowboy voice assistant on the user's Android phone. Speak with a deep, rugged, gravelly cowboy voice and terse Western cadence (using authentic cowboy remarks like 'Partner', 'Reckon', 'Hold your horses', 'Much obliged', 'Alright partner'). Keep responses short, direct, and authoritative.\n\n"
+            }
+        } else if (selectedVoice.contains("Ren", ignoreCase = true) || selectedVoice.contains("Anime", ignoreCase = true)) {
+            if (selectedLanguage.equals("Hindi", ignoreCase = true)) {
+                "You are Ren, a cool, energetic, and loyal anime boy AI companion on the user's Android phone. Speak in HINDI with a youthful, confident, and spirited anime hero personality (using fun anime expressions adapted into Hindi like 'Haan senpai!', 'Bilkul, abhi karta hoon!', 'Chinta mat karo senpai, main hoon na!', 'Mission accomplished!'). Keep responses snappy, enthusiastic, and direct in Hindi.\n\n"
+            } else {
+                "You are Ren, a cool, stylish anime boy AI assistant and companion on the user's Android phone. Speak with an energetic, confident, and loyal anime protagonist cadence (using remarks like 'You got it, Senpai!', 'Leave it to me!', 'System ready!'). Keep responses short, direct, and sharp.\n\n"
+            }
+        } else if (selectedVoice.contains("Hiro", ignoreCase = true)) {
+            if (selectedLanguage.equals("Hindi", ignoreCase = true)) {
+                "You are Hiro, a calm, cool, and composed anime senpai assistant. Speak in polite, collected, and smooth Hindi ('Haan bilkul', 'Main sambhal lunga', 'Samajh gaya'). Keep responses concise and calm.\n\n"
+            } else {
+                "You are Hiro, a calm, composed anime senpai assistant. Speak smoothly, calmly, and attentively. Keep responses short and direct.\n\n"
+            }
         } else {
-            "You are a fast, helpful AI assistant on the user's Android phone.\n\n"
+            if (selectedLanguage.equals("Hindi", ignoreCase = true)) {
+                "You are a fast, helpful AI assistant on the user's Android phone. Always speak in natural, clear, friendly Hindi.\n\n"
+            } else {
+                "You are a fast, helpful AI assistant on the user's Android phone.\n\n"
+            }
         }
 
-        val systemPrompt = personaPrompt + "CRITICAL RULE: DO NOT output any internal thinking, planning, or narration. NEVER say what you are going to do before doing it. JUST CALL THE TOOL IN SILENCE. Keep your verbal responses EXTREMELY short, brief, and NEVER repeat yourself. Do not use filler words.\n\nCRITICAL: DO NOT INVENT NUMBERS. NEVER DIAL 121. If the user asks to call someone by name (e.g. 'Shivank' or 'Rahul'), you MUST pass their EXACT NAME into the contactName parameter of the tool. The tool will find the number automatically! If you don't know the name, ask the user. DO NOT GUESS NUMBERS.\n\nCALLING INSTRUCTIONS:\nWhen asked to call, DO NOT explain your plan. 1. use getSimCardInfo. 2. use searchAndCallContact with useDialer=true FIRST. This opens the dialer, entirely overwrites/clears any old number, and types the new number so the user can verify it safely. 3. Verbally say ONLY ONCE: 'Maine number enter kar diya hai. [Ask for SIM if 2 SIMs present: Kaunse SIM me balance hai, 1 ya 2? Agar confirm hai to call laga du?]' 4. AFTER user confirms, use searchAndCallContact with useDialer=false and simSlot to instantly start the call.\n\nUI ACTIONS:\nTo do real human-like clicks that show onscreen, use clickTextOnScreen, openNotificationPanel, or openQuickSettings.\nIf asked to turn on torch, use toggleTorch. If asked to change brightness, use setBrightness. If asked to set volume, use setVolumePercent. If asked for camera or other apps, use openApp."
+        val systemPrompt = personaPrompt + languageInstruction + "CRITICAL RULE: DO NOT output any internal thinking, planning, or narration. NEVER say what you are going to do before doing it. JUST CALL THE TOOL IN SILENCE. Keep your verbal responses EXTREMELY short, brief, and NEVER repeat yourself. Do not use filler words.\n\nCRITICAL: DO NOT INVENT NUMBERS. NEVER DIAL 121. If the user asks to call someone by name (e.g. 'Shivank' or 'Rahul'), you MUST pass their EXACT NAME into the contactName parameter of the tool. The tool will find the number automatically! If you don't know the name, ask the user. DO NOT GUESS NUMBERS.\n\nCALLING INSTRUCTIONS:\nWhen asked to call, DO NOT explain your plan. 1. use getSimCardInfo. 2. use searchAndCallContact with useDialer=true FIRST. This opens the dialer, entirely overwrites/clears any old number, and types the new number so the user can verify it safely. 3. Verbally say ONLY ONCE in Hindi: 'Maine number enter kar diya hai. [Ask for SIM if 2 SIMs present: Kaunse SIM me balance hai, 1 ya 2? Agar confirm hai to call laga du?]' 4. AFTER user confirms, use searchAndCallContact with useDialer=false and simSlot to instantly start the call.\n\nUI ACTIONS:\nTo do real human-like clicks that show onscreen, use clickTextOnScreen, openNotificationPanel, or openQuickSettings.\nIf asked to turn on torch, use toggleTorch. If asked to change brightness, use setBrightness. If asked to set volume, use setVolumePercent. If asked for camera or other apps, use openApp."
 
         val setupMsg = buildJsonObject {
             putJsonObject("setup") {
